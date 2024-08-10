@@ -11,6 +11,7 @@ import (
 
 type Config struct {
 	*Option
+	files          []string
 	configModTimes map[string]time.Time
 }
 
@@ -72,6 +73,11 @@ func (c *Config) GetEnvironment() string {
 }
 
 func (c *Config) LoadWithKey(key string, config interface{}, files ...string) (err error) {
+	if len(files) == 0 {
+		if len(c.files) != 0 {
+			files = c.files
+		}
+	}
 	defaultValue := reflect.Indirect(reflect.ValueOf(config))
 	if !defaultValue.CanAddr() {
 		return fmt.Errorf("config %v should be addressable", config)
