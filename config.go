@@ -22,7 +22,7 @@ type Option struct {
 	Silent             bool
 	AutoReload         bool
 	AutoReloadInterval time.Duration
-	AutoReloadCallback func(config interface{})
+	AutoReloadCallback func(key string, config interface{})
 
 	// You can use embed.FS or any other fs.FS to load configs from. Default - use "os" package
 	FS fs.FS
@@ -89,7 +89,7 @@ func (c *Config) LoadWithKey(key string, config interface{}, files ...string) (e
 				if err, changed = c.loadWithKey(key, reflectPtr.Interface(), true, files...); err == nil && changed {
 					reflect.ValueOf(config).Elem().Set(reflectPtr.Elem())
 					if c.Option.AutoReloadCallback != nil {
-						c.Option.AutoReloadCallback(config)
+						c.Option.AutoReloadCallback(key, config)
 					}
 				} else if err != nil {
 					fmt.Printf("Failed to reload configuration from %v, got error %v\n", files, err)
