@@ -2,242 +2,120 @@ package config
 
 import (
 	"fmt"
-	"sync"
+	"io/fs"
+	"os"
+	"reflect"
+	"regexp"
+	"time"
 )
 
-// There are supported config format
-const (
-	JSON = "json"
-	Yaml = "yaml"
-)
-const (
-	// default delimiter
-	defaultDelimiter byte = '.'
-	// default struct tag name for binding data to struct
-	defaultStructTag = "config"
-	// struct tag name for set default-value on binding data
-	defaultValueTag = "default"
-)
-
-// internal vars
-// type intArr []int
-type strArr []string
-
-// type intMap map[string]int
-type strMap map[string]string
-
-// This is a default config manager instance
-var dc = New("default")
-
-// Config structure definition
 type Config struct {
-	// save the latest error, will clear after read.
-	err error
-	// config instance name
-	name string
-	lock sync.RWMutex
-
-	// config options
-	opts *Options
-	// all config data
-	data map[string]any
-
-	// loaded config files records
-	loadedUrls  []string
-	loadedFiles []string
-	driverNames []string
-	// driver alias to name map.
-	aliasMap  map[string]string
-	reloading bool
-
-	serializers map[string]Serializer
-
-	// cache on got config data
-	intCache map[string]int
-	strCache map[string]string
-
-	sArrCache map[string]strArr
-	sMapCache map[string]strMap
+	*Option
+	configModTimes map[string]time.Time
 }
 
-// New config instance with custom options, default with JSON driver
-func New(name string, opts ...OptionFn) *Config {
-	return NewEmpty(name, opts...).WithDriver(YamlDriver)
+type Option struct {
+	Environment        string
+	ENVPrefix          string
+	Debug              bool
+	Verbose            bool
+	Silent             bool
+	AutoReload         bool
+	AutoReloadInterval time.Duration
+	AutoReloadCallback func(config interface{})
+
+	// You can use embed.FS or any other fs.FS to load configs from. Default - use "os" package
+	FS fs.FS
 }
 
-// NewEmpty create config instance with custom options
-func NewEmpty(name string, opts ...OptionFn) *Config {
-	c := &Config{
-		name: name,
-		opts: newDefaultOption(),
-		data: make(map[string]any),
-		// don't add any drivers
-		serializers: map[string]Serializer{},
-		aliasMap:    make(map[string]string),
+// New initialize a Config
+func New(config *Option) *Config {
+	if config == nil {
+		config = &Option{}
 	}
 
-	return c.WithOptions(opts...)
-}
-
-// NewWith create config instance, and you can call some init func
-func NewWith(name string, fn func(c *Config)) *Config {
-	return New(name).With(fn)
-}
-
-// NewWithOptions config instance. alias of New()
-func NewWithOptions(name string, opts ...OptionFn) *Config {
-	return New(name).WithOptions(opts...)
-}
-
-// Default get the default instance
-func Default() *Config { return dc }
-
-/*************************************************************
- * config drivers
- *************************************************************/
-
-// WithDriver set multi drivers at once.
-func WithDriver(drivers ...Driver) { dc.WithDriver(drivers...) }
-
-// WithDriver set multi drivers at once.
-func (c *Config) WithDriver(drivers ...Driver) *Config {
-	for _, driver := range drivers {
-		c.AddDriver(driver)
+	if os.Getenv("CONFIG_DEBUG_MODE") != "" {
+		config.Debug = true
 	}
-	return c
+
+	if os.Getenv("CONFIG_VERBOSE_MODE") != "" {
+		config.Verbose = true
+	}
+
+	if os.Getenv("CONFIG_SILENT_MODE") != "" {
+		config.Silent = true
+	}
+
+	if config.AutoReload && config.AutoReloadInterval == 0 {
+		config.AutoReloadInterval = time.Second
+	}
+
+	return &Config{Option: config}
 }
 
-// AddDriver set a decoder and encoder driver for a format.
-func AddDriver(driver Driver) { dc.AddDriver(driver) }
+var testRegexp = regexp.MustCompile("_test|(\\.test$)")
 
-// AddDriver set a decoder and encoder driver for a format.
-func (c *Config) AddDriver(driver Driver) {
-	format := driver.Name()
-	if len(driver.Aliases()) > 0 {
-		for _, alias := range driver.Aliases() {
-			c.aliasMap[alias] = format
+// GetEnvironment get environment
+func (c *Config) GetEnvironment() string {
+	if c.Environment == "" {
+		if env := os.Getenv("CONFIG_ENV"); env != "" {
+			return env
 		}
+
+		if testRegexp.MatchString(os.Args[0]) {
+			return "test"
+		}
+
+		return "development"
 	}
-
-	c.driverNames = append(c.driverNames, format)
-	c.serializers[format] = driver.GetSerializer()
+	return c.Environment
 }
 
-// HasDecoder has decoder
-func (c *Config) HasDecoder(format string) bool {
-	format = c.resolveFormat(format)
-	_, ok := c.serializers[format]
-	return ok
-}
-
-// HasEncoder has encoder
-func (c *Config) HasEncoder(format string) bool {
-	format = c.resolveFormat(format)
-	_, ok := c.serializers[format]
-	return ok
-}
-
-// DelDriver delete driver of the format
-func (c *Config) DelDriver(format string) {
-	format = c.resolveFormat(format)
-	delete(c.serializers, format)
-}
-
-/*************************************************************
- * helper methods
- *************************************************************/
-
-// Name get config name
-func (c *Config) Name() string { return c.name }
-
-// AddAlias add alias for a format(driver name)
-func AddAlias(format, alias string) { dc.AddAlias(format, alias) }
-
-// AddAlias add alias for a format(driver name)
-//
-// Example:
-//
-//	config.AddAlias("ini", "conf")
-func (c *Config) AddAlias(format, alias string) {
-	c.aliasMap[alias] = format
-}
-
-// AliasMap get alias map
-func (c *Config) AliasMap() map[string]string { return c.aliasMap }
-
-// Error get last error, will clear after read.
-func (c *Config) Error() error {
-	err := c.err
-	c.err = nil
-	return err
-}
-
-// IsEmpty of the config
-func (c *Config) IsEmpty() bool {
-	return len(c.data) == 0
-}
-
-// LoadedUrls get loaded urls list
-func (c *Config) LoadedUrls() []string { return c.loadedUrls }
-
-// LoadedFiles get loaded files name
-func (c *Config) LoadedFiles() []string { return c.loadedFiles }
-
-// DriverNames get loaded driver names
-func (c *Config) DriverNames() []string { return c.driverNames }
-
-// Reset data and caches
-func Reset() { dc.ClearAll() }
-
-// ClearAll data and caches
-func ClearAll() { dc.ClearAll() }
-
-// ClearAll data and caches
-func (c *Config) ClearAll() {
-	c.ClearData()
-	c.ClearCaches()
-
-	c.aliasMap = make(map[string]string)
-	// options
-	c.opts.Readonly = false
-}
-
-// ClearData clear data
-func (c *Config) ClearData() {
-	c.fireHook(OnCleanData)
-
-	c.data = make(map[string]any)
-	c.loadedUrls = []string{}
-	c.loadedFiles = []string{}
-}
-
-// ClearCaches clear caches
-func (c *Config) ClearCaches() {
-	if c.opts.EnableCache {
-		c.intCache = nil
-		c.strCache = nil
-		c.sMapCache = nil
-		c.sArrCache = nil
+func (c *Config) LoadWithKey(key string, config interface{}, files ...string) (err error) {
+	defaultValue := reflect.Indirect(reflect.ValueOf(config))
+	if !defaultValue.CanAddr() {
+		return fmt.Errorf("config %v should be addressable", config)
 	}
-}
+	err, _ = c.loadWithKey(key, config, false, files...)
 
-/*************************************************************
- * helper methods
- *************************************************************/
+	if c.Option.AutoReload {
+		go func() {
+			timer := time.NewTimer(c.Option.AutoReloadInterval)
+			for range timer.C {
+				reflectPtr := reflect.New(reflect.ValueOf(config).Elem().Type())
+				reflectPtr.Elem().Set(defaultValue)
 
-// fire hook
-func (c *Config) fireHook(name string) {
-	if c.opts.HookFunc != nil {
-		c.opts.HookFunc(name, c)
+				var changed bool
+				if err, changed = c.loadWithKey(key, reflectPtr.Interface(), true, files...); err == nil && changed {
+					reflect.ValueOf(config).Elem().Set(reflectPtr.Elem())
+					if c.Option.AutoReloadCallback != nil {
+						c.Option.AutoReloadCallback(config)
+					}
+				} else if err != nil {
+					fmt.Printf("Failed to reload configuration from %v, got error %v\n", files, err)
+				}
+				timer.Reset(c.Option.AutoReloadInterval)
+			}
+		}()
 	}
+	return
 }
 
-// record error
-func (c *Config) addError(err error) {
-	c.err = err
+// Load will unmarshal configurations to struct from files that you provide
+func (c *Config) Load(config interface{}, files ...string) error {
+	return c.LoadWithKey("", config, files...)
 }
 
-// format and record error
-func (c *Config) addErrorf(format string, a ...any) {
-	c.err = fmt.Errorf(format, a...)
+// ENV return environment
+func ENV() string {
+	return New(nil).GetEnvironment()
+}
+
+// Load will unmarshal configurations to struct from files that you provide
+func Load(config interface{}, files ...string) error {
+	return New(nil).LoadWithKey("", config, files...)
+}
+
+func LoadWithKey(key string, config interface{}, files ...string) error {
+	return New(nil).LoadWithKey(key, config, files...)
 }
