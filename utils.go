@@ -50,7 +50,6 @@ func (c *Config) getConfigurationFileWithENVPrefix(file, env string) (string, ti
 }
 
 func (c *Config) getConfigurationFiles(config *Option, watchMode bool, files ...string) ([]string, map[string]time.Time) {
-	c.files = files
 	stat := os.Stat
 	if config.FS != nil {
 		stat = func(name string) (os.FileInfo, error) {

@@ -6,12 +6,14 @@ import (
 	"os"
 	"reflect"
 	"regexp"
+	"sync"
 	"time"
 )
 
 type Config struct {
 	*Option
-	files          []string
+	mapKeyStruct   map[string]any
+	once           sync.Once
 	configModTimes map[string]time.Time
 }
 
@@ -24,7 +26,7 @@ type Option struct {
 	AutoReload         bool
 	AutoReloadInterval time.Duration
 	AutoReloadCallback func(key string, config interface{})
-
+	Files              []string
 	// You can use embed.FS or any other fs.FS to load configs from. Default - use "os" package
 	FS fs.FS
 }
@@ -51,7 +53,10 @@ func New(config *Option) *Config {
 		config.AutoReloadInterval = time.Second
 	}
 
-	return &Config{Option: config}
+	return &Config{
+		Option:       config,
+		mapKeyStruct: make(map[string]any),
+	}
 }
 
 var testRegexp = regexp.MustCompile("_test|(\\.test$)")
@@ -72,44 +77,56 @@ func (c *Config) GetEnvironment() string {
 	return c.Environment
 }
 
-func (c *Config) LoadWithKey(key string, config interface{}, files ...string) (err error) {
-	if len(files) == 0 {
-		if len(c.files) != 0 {
-			files = c.files
-		}
-	}
+func (c *Config) LoadWithKey(key string, config interface{}) (err error) {
+	c.mapKeyStruct[key] = config
+
 	defaultValue := reflect.Indirect(reflect.ValueOf(config))
 	if !defaultValue.CanAddr() {
 		return fmt.Errorf("config %v should be addressable", config)
 	}
-	err, _ = c.loadWithKey(key, config, false, files...)
+	err, _ = c.loadWithKey(key, config, false, c.Files...)
 
 	if c.Option.AutoReload {
-		go func() {
-			timer := time.NewTimer(c.Option.AutoReloadInterval)
-			for range timer.C {
-				reflectPtr := reflect.New(reflect.ValueOf(config).Elem().Type())
-				reflectPtr.Elem().Set(defaultValue)
+		c.once.Do(func() {
+			go func() {
+				timer := time.NewTimer(c.Option.AutoReloadInterval)
+				for range timer.C {
+					reflectPtr := reflect.New(reflect.ValueOf(config).Elem().Type())
+					reflectPtr.Elem().Set(defaultValue)
 
-				var changed bool
-				if err, changed = c.loadWithKey(key, reflectPtr.Interface(), true, files...); err == nil && changed {
-					reflect.ValueOf(config).Elem().Set(reflectPtr.Elem())
-					if c.Option.AutoReloadCallback != nil {
-						c.Option.AutoReloadCallback(key, config)
+					var changed bool
+					if err, changed = c.loadWithKey(key, reflectPtr.Interface(), true, c.Files...); err == nil && changed {
+						reflect.ValueOf(config).Elem().Set(reflectPtr.Elem())
+						if c.Option.AutoReloadCallback != nil {
+							c.Option.AutoReloadCallback(key, config)
+						}
+						for key1, config := range c.mapKeyStruct {
+							if key1 != key {
+								_, _ = c.loadWithKey(key1, config, false, c.Files...)
+
+								if c.Option.AutoReloadCallback != nil {
+									c.Option.AutoReloadCallback(key1, config)
+								}
+							}
+
+						}
+
+					} else if err != nil {
+						fmt.Printf("Failed to reload configuration from %v, got error %v\n", c.Files, err)
 					}
-				} else if err != nil {
-					fmt.Printf("Failed to reload configuration from %v, got error %v\n", files, err)
+
+					timer.Reset(c.Option.AutoReloadInterval)
 				}
-				timer.Reset(c.Option.AutoReloadInterval)
-			}
-		}()
+			}()
+		})
+
 	}
 	return
 }
 
 // Load will unmarshal configurations to struct from files that you provide
-func (c *Config) Load(config interface{}, files ...string) error {
-	return c.LoadWithKey("", config, files...)
+func (c *Config) Load(config interface{}) error {
+	return c.LoadWithKey("", config)
 }
 
 // ENV return environment
@@ -119,9 +136,9 @@ func ENV() string {
 
 // Load will unmarshal configurations to struct from files that you provide
 func Load(config interface{}, files ...string) error {
-	return New(nil).LoadWithKey("", config, files...)
+	return New(&Option{Files: files}).Load(config)
 }
 
 func LoadWithKey(key string, config interface{}, files ...string) error {
-	return New(nil).LoadWithKey(key, config, files...)
+	return New(&Option{Files: files}).LoadWithKey(key, config)
 }
