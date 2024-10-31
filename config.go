@@ -12,9 +12,9 @@ import (
 
 type Config struct {
 	*Option
-	mapKeyStruct   map[string]any
+	mapKeyStruct   map[string][]any // LoadWithKey时, 将key和对应的对象进行关联, 触发配置重载时, 重新读取配置内容到对象
 	once           sync.Once
-	configModTimes map[string]time.Time
+	configModTimes map[string]time.Time //记录配置文件修改时间
 }
 
 type Option struct {
@@ -55,7 +55,7 @@ func New(config *Option) *Config {
 
 	return &Config{
 		Option:       config,
-		mapKeyStruct: make(map[string]any),
+		mapKeyStruct: make(map[string][]any),
 	}
 }
 
@@ -78,7 +78,7 @@ func (c *Config) GetEnvironment() string {
 }
 
 func (c *Config) LoadWithKey(key string, config interface{}) (err error) {
-	c.mapKeyStruct[key] = config
+	c.mapKeyStruct[key] = append(c.mapKeyStruct[key], config)
 
 	defaultValue := reflect.Indirect(reflect.ValueOf(config))
 	if !defaultValue.CanAddr() {
@@ -102,10 +102,12 @@ func (c *Config) LoadWithKey(key string, config interface{}) (err error) {
 						}
 						for key1, config := range c.mapKeyStruct {
 							if key1 != key {
-								_, _ = c.loadWithKey(key1, config, false, c.Files...)
-
-								if c.Option.AutoReloadCallback != nil {
-									c.Option.AutoReloadCallback(key1, config)
+								for _, a := range config {
+									_, _ = c.loadWithKey(key1, a, false, c.Files...)
+								}
+							} else {
+								for _, a := range config {
+									_, _ = c.loadWithKey(key1, a, false, c.Files...)
 								}
 							}
 
